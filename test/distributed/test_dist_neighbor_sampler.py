@@ -69,6 +69,17 @@ def create_data(rank: int, world_size: int, time_attr: Optional[str] = None):
         feature_store.put_tensor(edge_time, group_name=None,
                                  attr_name=time_attr)
 
+    elif time_attr == 'edge_weights':  # Create edge-level time data:
+        data.edge_weights = torch.tensor([0, 1, 2, 3, 4, 5, 7, 7, 7, 7, 7, 11])
+
+        if rank == 0:
+            edge_weights = torch.tensor([0, 1, 2, 3, 4, 5, 11])
+        if rank == 1:
+            edge_weights = torch.tensor([4, 7, 7, 7, 7, 7, 11])
+
+        feature_store.put_tensor(edge_weights, group_name=None,
+                                 attr_name=time_attr)
+
     return (feature_store, graph_store), data
 
 
@@ -210,6 +221,88 @@ def dist_neighbor_sampler_temporal(
         disjoint=True,
         temporal_strategy=temporal_strategy,
         time_attr=time_attr,
+    )
+
+    # Evaluate node sample function:
+    out = node_sample(inputs, sampler._sample)
+
+    # Compare distributed output with single machine output:
+    assert torch.equal(out_dist.node, out.node)
+    assert torch.equal(out_dist.row, out.row)
+    assert torch.equal(out_dist.col, out.col)
+    assert torch.equal(out_dist.batch, out.batch)
+    assert out_dist.num_sampled_nodes == out.num_sampled_nodes
+    assert out_dist.num_sampled_edges == out.num_sampled_edges
+
+def dist_neighbor_sampler_biased(
+    world_size: int,
+    rank: int,
+    master_port: int,
+    # seed_time: torch.tensor = None,
+    # temporal_strategy: str = 'uniform',
+    # time_attr: str = 'time',
+
+    edge_weights: torch.tensor = None,
+    weight_attr: str = 'edge_weight',
+):
+    dist_data, data = create_data(rank, world_size, time_attr)
+
+    current_ctx = DistContext(
+        rank=rank,
+        global_rank=rank,
+        world_size=world_size,
+        global_world_size=world_size,
+        group_name='dist-sampler-test',
+    )
+
+    # num_neighbors = [-1, -1] if temporal_strategy == 'uniform' else [1, 1]
+    num_neighbors = [1, 1]
+    dist_sampler = DistNeighborSampler(
+        data=dist_data,
+        current_ctx=current_ctx,
+        num_neighbors=num_neighbors,
+        shuffle=False,
+        disjoint=True,
+        # temporal_strategy=temporal_strategy,
+        # time_attr=time_attr,
+        weight_attr=weight_attr,
+    )
+    # Close RPC & worker group at exit:
+    atexit.register(shutdown_rpc)
+
+    init_rpc(
+        current_ctx=current_ctx,
+        master_addr='localhost',
+        master_port=master_port,
+    )
+    dist_sampler.init_sampler_instance()
+    dist_sampler.register_sampler_rpc()
+    dist_sampler.event_loop = ConcurrentEventLoop(2)
+    dist_sampler.event_loop.start_loop()
+
+    if rank == 0:  # Seed nodes:
+        input_node = torch.tensor([1, 6], dtype=torch.int64)
+    else:
+        input_node = torch.tensor([4, 9], dtype=torch.int64)
+
+    inputs = NodeSamplerInput(
+        input_id=None,
+        node=input_node,
+        # time=seed_time,
+        weight=edge_weights,
+    )
+
+    # Evaluate distributed node sample function:
+    out_dist = dist_sampler.event_loop.run_task(
+        coro=dist_sampler.node_sample(inputs))
+
+    sampler = NeighborSampler(
+        data=data,
+        num_neighbors=num_neighbors,
+        disjoint=True,
+        # temporal_strategy=temporal_strategy,
+        # time_attr=time_attr,
+        weight_attr=weight_attr
     )
 
     # Evaluate node sample function:
@@ -472,6 +565,38 @@ def test_dist_neighbor_sampler_edge_level_temporal(
 
 
 @onlyDistributedTest
+@pytest.mark.parametrize('seed_time', [[3, 7]])
+def test_dist_neighbor_sampler_edge_weight(
+        seed_time,
+):
+    seed_time = torch.tensor(seed_time)
+
+    mp_context = torch.multiprocessing.get_context('spawn')
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        s.bind(('127.0.0.1', 0))
+        port = s.getsockname()[1]
+
+    world_size = 2
+    w0 = mp_context.Process(
+        target=dist_neighbor_sampler_biased,
+        args=(world_size, 0, port, seed_time, 'edge_weight'),
+    )
+
+    w1 = mp_context.Process(
+        target=dist_neighbor_sampler_biased,
+        args=(world_size, 1, port, seed_time, 'edge_weight'),
+    )
+
+    w0.start()
+    w1.start()
+    w0.join()
+    w1.join()
+    assert w0.exitcode == 0
+    assert w1.exitcode == 0
+
+
+@onlyDistributedTest
 @pytest.mark.parametrize('disjoint', [False, True])
 def test_dist_neighbor_sampler_hetero(tmp_path, disjoint):
     mp_context = torch.multiprocessing.get_context('spawn')
@@ -560,6 +685,8 @@ def test_dist_neighbor_sampler_temporal_hetero(
     w1.start()
     w0.join()
     w1.join()
+    assert w0.exitcode == 0
+    assert w1.exitcode == 0
 
 
 @onlyDistributedTest

@@ -23,7 +23,7 @@ from torch_geometric.testing import onlyDistributedTest
 from torch_geometric.typing import EdgeType
 
 
-def create_data(rank, world_size, time_attr: Optional[str] = None):
+def create_data(rank, world_size, _attr: Optional[str] = None):
     if rank == 0:  # Partition 0:
         node_id = torch.tensor([0, 1, 2, 3, 4, 5, 9])
         edge_index = torch.tensor([  # Sorted by destination.
@@ -56,11 +56,11 @@ def create_data(rank, world_size, time_attr: Optional[str] = None):
     ])
     data = Data(x=None, y=None, edge_index=edge_index, num_nodes=10)
 
-    if time_attr == 'time':  # Create node-level time data:
+    if _attr == 'time':  # Create node-level time data:
         data.time = torch.tensor([5, 0, 1, 3, 3, 4, 4, 4, 4, 4])
         feature_store.put_tensor(data.time, group_name=None, attr_name='time')
 
-    elif time_attr == 'edge_time':  # Create edge-level time data:
+    elif _attr == 'edge_time':  # Create edge-level time data:
         data.edge_time = torch.tensor([0, 1, 2, 3, 4, 5, 7, 7, 7, 7, 7, 11])
 
         if rank == 0:
@@ -69,7 +69,18 @@ def create_data(rank, world_size, time_attr: Optional[str] = None):
             edge_time = torch.tensor([4, 7, 7, 7, 7, 7, 11])
 
         feature_store.put_tensor(edge_time, group_name=None,
-                                 attr_name=time_attr)
+                                 attr_name=_attr)
+
+    elif _attr == 'edge_weight':  # Create edge-level weight data:
+        data.edge_weight = torch.tensor([0, 1, 2, 3, 4, 5, 7, 7, 7, 7, 7, 11])
+
+        if rank == 0:
+            edge_weight = torch.tensor([0, 1, 2, 3, 4, 5, 11])
+        if rank == 1:
+            edge_weight = torch.tensor([4, 7, 7, 7, 7, 7, 11])
+
+        feature_store.put_tensor(edge_weight, group_name=None,
+                                 attr_name=_attr)
 
     return (feature_store, graph_store), data
 
@@ -227,6 +238,99 @@ def dist_link_neighbor_sampler_temporal(
         disjoint=True,
         temporal_strategy=temporal_strategy,
         time_attr=time_attr,
+    )
+
+    # Evaluate edge sample function
+    out = edge_sample(
+        inputs,
+        sampler._sample,
+        data.num_nodes,
+        disjoint=True,
+        node_time=seed_time,
+        neg_sampling=None,
+    )
+
+    # Compare distributed output with single machine output
+    assert torch.equal(out_dist.node, out.node)
+    assert torch.equal(out_dist.row, out.row)
+    assert torch.equal(out_dist.col, out.col)
+    assert torch.equal(out_dist.batch, out.batch)
+    assert out_dist.num_sampled_nodes == out.num_sampled_nodes
+    assert out_dist.num_sampled_edges == out.num_sampled_edges
+
+def dist_link_neighbor_sampler_biased(
+    world_size: int,
+    rank: int,
+    master_port: int,
+    # seed_time: torch.tensor = None,
+    # temporal_strategy: str = 'uniform',
+    # time_attr: str = 'time',
+    edge_weights: torch.tensor = None,
+    weight_attr: str = 'edge_weight',
+):
+    dist_data, data = create_data(rank, world_size, weight_attr)
+
+    current_ctx = DistContext(
+        rank=rank,
+        global_rank=rank,
+        world_size=world_size,
+        global_world_size=world_size,
+        group_name='dist-sampler-test',
+    )
+
+    num_neighbors = [1, 1]
+    # num_neighbors = [-1, -1] if temporal_strategy == 'uniform' else [1, 1]
+    dist_sampler = DistNeighborSampler(
+        data=dist_data,
+        current_ctx=current_ctx,
+        num_neighbors=num_neighbors,
+        shuffle=False,
+        disjoint=True,
+        # temporal_strategy=temporal_strategy,
+        # time_attr=time_attr,
+        weight_attr= 'edge_weight',
+    )
+
+    # Close RPC & worker group at exit:
+    atexit.register(shutdown_rpc)
+
+    init_rpc(
+        current_ctx=current_ctx,
+        master_addr='localhost',
+        master_port=master_port,
+    )
+    dist_sampler.init_sampler_instance()
+    dist_sampler.register_sampler_rpc()
+    dist_sampler.event_loop = ConcurrentEventLoop(2)
+    dist_sampler.event_loop.start_loop()
+
+    if rank == 0:  # Seed nodes:
+        input_row = torch.tensor([1, 6], dtype=torch.int64)
+        input_col = torch.tensor([2, 7], dtype=torch.int64)
+    else:
+        input_row = torch.tensor([4, 9], dtype=torch.int64)
+        input_col = torch.tensor([5, 0], dtype=torch.int64)
+
+    inputs = EdgeSamplerInput(
+        input_id=None,
+        row=input_row,
+        col=input_col,
+        # time=seed_time,
+        weight=edge_weights,
+    )
+
+    # Evaluate distributed edge sample function
+    out_dist = dist_sampler.event_loop.run_task(coro=dist_sampler.edge_sample(
+        inputs, dist_sampler.node_sample, data.num_nodes, disjoint=True,
+        weight=edge_weights, neg_sampling=None))
+
+    sampler = NeighborSampler(
+        data=data,
+        num_neighbors=num_neighbors,
+        disjoint=True,
+        # temporal_strategy=temporal_strategy,
+        # time_attr=time_attr,
+        weight_attr='edge_weight',
     )
 
     # Evaluate edge sample function

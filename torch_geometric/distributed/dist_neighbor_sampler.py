@@ -77,6 +77,7 @@ class DistNeighborSampler:
         disjoint: bool = False,
         temporal_strategy: str = 'uniform',
         time_attr: Optional[str] = None,
+        weight_attr: Optional[str] = None,
         concurrency: int = 1,
         device: Optional[torch.device] = None,
         **kwargs,
@@ -99,6 +100,7 @@ class DistNeighborSampler:
         self.temporal_strategy = temporal_strategy
         self.time_attr = time_attr
         self.temporal = time_attr is not None
+        self.weight_attr = weight_attr
         self.with_edge_attr = self.feature_store.has_edge_attr()
         self.csc = True
 
@@ -111,6 +113,7 @@ class DistNeighborSampler:
             disjoint=self.disjoint,
             temporal_strategy=self.temporal_strategy,
             time_attr=self.time_attr,
+            weight_attr=self.weight_attr
         )
 
         self.num_hops = self._sampler.num_neighbors.num_hops
@@ -507,6 +510,7 @@ class DistNeighborSampler:
         num_nodes: Union[int, Dict[NodeType, int]],
         disjoint: bool,
         node_time: Optional[Union[Tensor, Dict[str, Tensor]]] = None,
+        weight: Optional[Union[Tensor, Dict[str, Tensor]]] = None,
         neg_sampling: Optional[NegativeSampling] = None,
     ) -> Union[SamplerOutput, HeteroSamplerOutput]:
         r"""Performs layer-by-layer distributed sampling from an

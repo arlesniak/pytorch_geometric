@@ -56,12 +56,15 @@ class NodeSamplerInput(CastMixin):
         node (torch.Tensor): The indices of seed nodes to start sampling from.
         time (torch.Tensor, optional): The timestamp for the seed nodes.
             (default: :obj:`None`)
+        weight (torch.Tensor, optional): The weight for the seed nodes.
+            (default: :obj:`None`)
         input_type (str, optional): The input node type (in case of sampling in
             a heterogeneous graph). (default: :obj:`None`)
     """
     input_id: OptTensor
     node: Tensor
     time: OptTensor = None
+    weight: OptTensor = None
     input_type: Optional[NodeType] = None
 
     def __init__(
@@ -69,6 +72,7 @@ class NodeSamplerInput(CastMixin):
         input_id: OptTensor,
         node: Tensor,
         time: OptTensor = None,
+        weight: OptTensor = None,
         input_type: Optional[NodeType] = None,
     ):
         if input_id is not None:
@@ -80,6 +84,7 @@ class NodeSamplerInput(CastMixin):
         self.input_id = input_id
         self.node = node
         self.time = time
+        self.weight = weight
         self.input_type = input_type
 
     def __getitem__(self, index: Union[Tensor, Any]) -> 'NodeSamplerInput':
@@ -90,6 +95,7 @@ class NodeSamplerInput(CastMixin):
             self.input_id[index] if self.input_id is not None else index,
             self.node[index],
             self.time[index] if self.time is not None else None,
+            self.weight[index] if self.weight is not None else None,
             self.input_type,
         )
 
@@ -110,6 +116,8 @@ class EdgeSamplerInput(CastMixin):
             (default: :obj:`None`)
         time (torch.Tensor, optional): The timestamp for the seed links.
             (default: :obj:`None`)
+        weights (torch.Tensor, optional): The weight for the seed links.
+            (default: :obj:`None`)
         input_type (Tuple[str, str, str], optional): The input edge type (in
             case of sampling in a heterogeneous graph). (default: :obj:`None`)
     """
@@ -118,6 +126,7 @@ class EdgeSamplerInput(CastMixin):
     col: Tensor
     label: OptTensor = None
     time: OptTensor = None
+    weight: OptTensor = None
     input_type: Optional[EdgeType] = None
 
     def __init__(
@@ -127,6 +136,7 @@ class EdgeSamplerInput(CastMixin):
         col: Tensor,
         label: OptTensor = None,
         time: OptTensor = None,
+        weight: OptTensor = None,
         input_type: Optional[EdgeType] = None,
     ):
         if input_id is not None:
@@ -137,12 +147,15 @@ class EdgeSamplerInput(CastMixin):
             label = label.cpu()
         if time is not None:
             time = time.cpu()
+        if weight is not None:
+            weight = weight.cpu()
 
         self.input_id = input_id
         self.row = row
         self.col = col
         self.label = label
         self.time = time
+        self.weight = weight
         self.input_type = input_type
 
     def __getitem__(self, index: Union[Tensor, Any]) -> 'EdgeSamplerInput':
@@ -155,6 +168,7 @@ class EdgeSamplerInput(CastMixin):
             self.col[index],
             self.label[index] if self.label is not None else None,
             self.time[index] if self.time is not None else None,
+            self.weight[index] if self.weight is not None else None,
             self.input_type,
         )
 
